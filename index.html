@@ -27,7 +27,6 @@
             touch-action: none; 
             margin: 0;
             padding: 0;
-            background-color: #f0f2f5; /* Default bg */
         }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
@@ -39,12 +38,12 @@
         @keyframes pageTurnRight { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         @keyframes pageTurnLeft { from { transform: translateX(-40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
-        .anim-enter { animation-duration: 0.5s; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); animation-fill-mode: both; }
+        .anim-enter { animation-duration: 0.6s; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); animation-fill-mode: both; }
         .anim-fade-scale { animation-name: fadeInScale; }
         .anim-slide-up { animation-name: slideUpFade; }
         .anim-slide-down { animation-name: slideDownFade; }
-        .anim-page-next { animation: pageTurnRight 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
-        .anim-page-prev { animation: pageTurnLeft 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
+        .anim-page-next { animation: pageTurnRight 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
+        .anim-page-prev { animation: pageTurnLeft 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
     </style>
 </head>
 <body>
@@ -239,7 +238,6 @@
             const [uiVisible, setUiVisible] = useState(true);
             const [touchStart, setTouchStart] = useState(null);
             const [inputMethod, setInputMethod] = useState('finger');
-            const [renderScaleFactor, setRenderScaleFactor] = useState(1); // Track PDF render quality
 
             // DARK MODE STATE
             const [darkMode, setDarkMode] = useState(() => {
@@ -247,10 +245,9 @@
                 return false;
             });
 
-            // THREE CANVASES FOR VSYNC PERFORMANCE
-            const bgCanvasRef = useRef(null); // Static Image
-            const staticInkCanvasRef = useRef(null); // Saved Strokes
-            const activeInkCanvasRef = useRef(null); // Current Stroke (Fast)
+            // TWO CANVASES: 1 for Background (Image), 1 for Ink
+            const bgCanvasRef = useRef(null);
+            const canvasRef = useRef(null);
             const containerRef = useRef(null);
             const fileInputRef = useRef(null);
 
@@ -329,42 +326,45 @@
             const handleDelete = async (id) => { if(confirm("Delete this score?")) { await deleteFromDB(id); setLibrary(prev => prev.filter(doc => doc.id !== id)); } };
 
             // --- AUTO FIT LOGIC ---
-            const fitPageToScreen = (width, height, renderedScale) => {
-                 // renderedScale is how much the image is bigger than 'real' dimensions (e.g. 2.0)
-                 // But we don't care about 'real' units for fit, we care about pixels.
-                 // The image is width x height pixels.
+            const fitPageToScreen = (width, height) => {
                  const screenWidth = window.innerWidth;
                  const screenHeight = window.innerHeight;
-                 
-                 // We want the image to fit within screen width mostly
-                 // transform scale is applied to the container.
-                 // Visual width = width * scale
-                 // We want Visual width = screenWidth
-                 // scale = screenWidth / width
                  
                  const scaleW = screenWidth / width;
                  const scaleH = screenHeight / height;
                  
-                 // Fit width or height, whichever is smaller, to ensure visibility
+                 // Fit based on the dimension that is constrained
                  const bestScale = Math.min(scaleW, scaleH) * 0.95; // 95% to leave margin
                  
                  setScale(bestScale);
                  
-                 // Center
-                 const centeredX = (screenWidth - (width * bestScale)) / 2;
-                 setPan({ x: Math.max(0, centeredX), y: 10 });
+                 // Visual dimensions
+                 const visualW = width * bestScale;
+                 const visualH = height * bestScale;
+
+                 // Calculate center
+                 const x = (screenWidth - visualW) / 2;
+                 
+                 // Vertical Center Logic:
+                 // If page fits entirely in height, center it vertically.
+                 // If page is taller than screen (scrolling needed), start at top.
+                 let y;
+                 if (visualH < screenHeight) {
+                     y = (screenHeight - visualH) / 2;
+                 } else {
+                     y = 10; // Top margin
+                 }
+                 
+                 setPan({ x: Math.max(0, x), y: Math.max(0, y) });
             };
 
             const renderPdfPageFromObj = async (page) => {
                 const pixelRatio = window.devicePixelRatio || 1;
-                // Cap render quality to 2.0 to prevent crashes on huge PDFs
-                const rScale = Math.min(pixelRatio * 1.5, 2.0); 
-                setRenderScaleFactor(rScale); // Save this so we know later if needed
-
-                const viewport = page.getViewport({ scale: rScale });
+                const renderScale = Math.min(pixelRatio * 1.5, 2.5);
+                const viewport = page.getViewport({ scale: renderScale });
+                
                 const canvas = document.createElement('canvas');
                 canvas.width = viewport.width; canvas.height = viewport.height;
-                
                 await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
                 
                 const img = new Image(); 
@@ -372,11 +372,8 @@
                 
                 img.onload = () => { 
                     setFile(img); 
-                    // ONLY AUTO-FIT if this is the first load of this page context? 
-                    // User requested "automatically recognize page size and make full page shows EVERY TIME score is loaded"
-                    // We interpret "loaded" as file opening.
-                    // If we do it on page turn, it snaps. Let's do it on render.
-                    fitPageToScreen(img.width, img.height, rScale);
+                    // Trigger fit on first load of image
+                    fitPageToScreen(img.width, img.height);
                 };
             };
 
@@ -400,7 +397,7 @@
                     const img = new Image(); img.src = dataUrl; 
                     img.onload = () => { 
                         setFile(img); 
-                        fitPageToScreen(img.width, img.height, 1);
+                        fitPageToScreen(img.width, img.height);
                         setViewMode('work'); 
                     };
                 } else if (loadedPdf) {
@@ -438,76 +435,57 @@
             
             const getCurrentStrokes = () => pageStrokes[currentPage] || [];
             
-            // --- TRIPLE-LAYER RENDERING ---
+            // --- DRAWING LOGIC (SEPARATED) ---
             
-            // 1. Background Image
             const drawBackground = () => {
                 const canvas = bgCanvasRef.current;
                 if (!canvas || !file) return;
-                // Sync sizes
                 if (canvas.width !== file.width || canvas.height !== file.height) {
                     canvas.width = file.width; canvas.height = file.height;
-                    if (staticInkCanvasRef.current) { staticInkCanvasRef.current.width = file.width; staticInkCanvasRef.current.height = file.height; }
-                    if (activeInkCanvasRef.current) { activeInkCanvasRef.current.width = file.width; activeInkCanvasRef.current.height = file.height; }
+                    if (canvasRef.current) { canvasRef.current.width = file.width; canvasRef.current.height = file.height; }
                 }
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.drawImage(file, 0, 0);
             };
 
-            // 2. Static Ink (Saved Strokes)
-            const drawStaticInk = () => {
-                const canvas = staticInkCanvasRef.current;
-                if (!canvas || !file) return;
+            const drawInk = () => {
+                const canvas = canvasRef.current;
+                if (!canvas || !file) return; 
                 const ctx = canvas.getContext('2d');
+                
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.lineCap = 'round'; ctx.lineJoin = 'round';
                 
                 getCurrentStrokes().forEach(s => { 
-                    ctx.beginPath(); ctx.strokeStyle = s.color; ctx.lineWidth = s.size; 
+                    ctx.beginPath(); 
+                    ctx.strokeStyle = s.color; 
+                    ctx.lineWidth = s.size; 
                     ctx.globalCompositeOperation = s.tool === 'erase' ? 'destination-out' : 'source-over'; 
                     if(s.points.length){ ctx.moveTo(s.points[0].x,s.points[0].y); s.points.forEach(p=>ctx.lineTo(p.x,p.y)); } 
                     ctx.stroke(); 
                 });
-            };
-
-            // 3. Active Ink (Current Stroke)
-            const drawActiveInk = () => {
-                const canvas = activeInkCanvasRef.current;
-                if (!canvas || !file) return;
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height); // Fast clear
                 
                 if (currentStroke) { 
-                    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
                     ctx.beginPath(); 
                     ctx.strokeStyle = currentStroke.color; 
                     ctx.lineWidth = currentStroke.size; 
                     ctx.globalCompositeOperation = currentStroke.tool === 'erase' ? 'destination-out' : 'source-over'; 
-                    if(currentStroke.points.length){
-                        ctx.moveTo(currentStroke.points[0].x,currentStroke.points[0].y); 
-                        currentStroke.points.forEach(p=>ctx.lineTo(p.x,p.y));
-                    } 
+                    if(currentStroke.points.length){ ctx.moveTo(currentStroke.points[0].x,currentStroke.points[0].y); currentStroke.points.forEach(p=>ctx.lineTo(p.x,p.y)); } 
                     ctx.stroke(); 
                 }
+                
+                ctx.globalCompositeOperation = 'source-over';
             };
 
             useEffect(() => { if(window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }, []);
-            
-            // React to changes
+            useEffect(() => { const handleK = (e) => { if (document.activeElement.tagName === 'INPUT' || viewMode !== 'work') return; if(['ArrowRight','PageDown',' ','Enter'].includes(e.key)) changePage(1); if(['ArrowLeft','PageUp'].includes(e.key)) changePage(-1); }; window.addEventListener('keydown', handleK); return () => window.removeEventListener('keydown', handleK); }, [viewMode, currentPage, numPages, pdfDoc]);
             useEffect(() => { if (viewMode === 'work' && file) drawBackground(); }, [file, viewMode]); 
-            useEffect(() => { if (viewMode === 'work' && file) drawStaticInk(); }, [pageStrokes, viewMode, file]); 
-            useEffect(() => { if (viewMode === 'work' && file) drawActiveInk(); }, [currentStroke, viewMode, file]);
-            
-            // Force redraw on resize to keep sync
-            useEffect(() => { 
-                const r = () => { if(viewMode === 'work' && file) { drawBackground(); drawStaticInk(); drawActiveInk(); }}; 
-                window.addEventListener('resize', r); return () => window.removeEventListener('resize', r); 
-            }, [file, viewMode]);
-            
+            useEffect(() => { if (viewMode === 'work' && file) drawInk(); }, [pageStrokes, currentStroke, viewMode, file]); 
+
+            useEffect(() => { const r = () => { if(viewMode === 'work' && file) { drawBackground(); drawInk(); }}; window.addEventListener('resize', r); return () => window.removeEventListener('resize', r); }, [file, viewMode]);
             useEffect(() => { const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)'); const handleChange = (e) => setDarkMode(e.matches); mediaQuery.addEventListener('change', handleChange); return () => mediaQuery.removeEventListener('change', handleChange); }, []);
 
-            // --- Object Erase Logic ---
             const hitTestStroke = (x, y, strokes) => {
                 const threshold = 10 / scale;
                 for (let i = strokes.length - 1; i >= 0; i--) {
@@ -532,27 +510,23 @@
                 return -1;
             };
 
-            // --- Input Handlers ---
             const handleTouchStart = (e) => {
                 const touches = e.touches;
                 if (touches.length === 2) {
                     if(isDrawing) { setIsDrawing(false); setCurrentStroke(null); } 
                     const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
-                    setTouchStart({ x: (touches[0].clientX + touches[1].clientX) / 2, y: (touches[0].clientY + touches[1].clientY) / 2, dist: dist, initialScale: scale, initialPan: { ...pan }, count: 2 });
+                    setTouchStart({ x: (touches[0].clientX + touches[1].clientX) / 2, y: (touches[0].clientY + touches[1].clientY) / 2, dist: dist, initialScale: scale, initialPan: { ...pan }, count: 2, startTime: Date.now() });
                 } else if (touches.length === 1) {
                     if (mode === 'view') {
-                        setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
+                        setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1, startTime: Date.now() });
                     } else {
                         if (inputMethod === 'stylus') {
-                            // Check if touches[0] is stylus. If not, it's a PAN gesture.
-                            // Note: touchType support varies. Fallback logic handled in pointer events.
-                            // If user touches with finger in stylus mode, we start a PAN.
                             const isStylus = touches[0].touchType === 'stylus';
                             if (!isStylus) {
-                                setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
+                                setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1, startTime: Date.now() });
                             }
                         } else {
-                            // Finger Mode -> Let PointerDown handle drawing
+                            handlePointerDown(e); 
                         }
                     }
                 }
@@ -577,8 +551,10 @@
                             const deltaX = touches[0].clientX - touchStart.x;
                             const deltaY = touches[0].clientY - touchStart.y;
                             setPan(p => ({ x: p.x + deltaX, y: p.y + deltaY }));
-                            setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
+                            setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1, startTime: touchStart.startTime }); // Keep start time
                         }
+                    } else {
+                        handlePointerMove(e);
                     }
                 }
             };
@@ -588,18 +564,20 @@
                 if ((mode === 'view' || inputMethod === 'stylus') && touchStart.count === 1 && e.changedTouches.length === 1) {
                     const touch = e.changedTouches[0];
                     const distMoved = Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y);
-                    if (distMoved < 10) { setUiVisible(!uiVisible); }
+                    const duration = Date.now() - touchStart.startTime;
+                    // Strict Tap Detection: Minimal move AND quick duration
+                    if (distMoved < 10 && duration < 250) { setUiVisible(!uiVisible); }
                 }
                 setTouchStart(null);
+                if (mode !== 'view' && inputMethod !== 'stylus') handlePointerUp(e);
             };
 
             const handlePointerDown = (e) => { 
                 if(mode==='view') return; 
-                // STYLUS MODE: Only accept pen input
                 if (inputMethod === 'stylus' && e.pointerType !== 'pen') return; 
 
                 e.currentTarget.setPointerCapture(e.pointerId); 
-                const {x,y} = getCoordinates(e, activeInkCanvasRef);
+                const {x,y} = getCoordinates(e, canvasRef);
                 
                 if (mode === 'object-eraser') {
                     const hitIndex = hitTestStroke(x, y, getCurrentStrokes());
@@ -618,7 +596,7 @@
             };
             
             const handlePointerMove = (e) => { 
-                const {x,y}=getCoordinates(e, activeInkCanvasRef); 
+                const {x,y}=getCoordinates(e, canvasRef); 
                 
                 if (mode === 'object-eraser' && (e.buttons === 1 || e.pressure > 0)) {
                     const hitIndex = hitTestStroke(x, y, getCurrentStrokes());
@@ -716,9 +694,7 @@
                                     {/* Layer 1: Background Image */}
                                     <canvas ref={bgCanvasRef} className="absolute inset-0 pointer-events-none" />
                                     {/* Layer 2: Static Ink (Saved) */}
-                                    <canvas ref={staticInkCanvasRef} className="absolute inset-0 pointer-events-none" />
-                                    {/* Layer 3: Active Ink (Drawing) - Receives Events */}
-                                    <canvas ref={activeInkCanvasRef} className="absolute inset-0 z-10" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} />
+                                    <canvas ref={canvasRef} className="absolute inset-0 z-10" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} />
                                 </div>
                             </div>
 
@@ -737,8 +713,8 @@
                                 </div>
                                 <div className={`flex items-center gap-1 p-1.5 px-2 rounded-[50px] backdrop-blur-md ${darkMode ? 'bg-zinc-900/80 border-zinc-700 shadow-black/50' : 'bg-[rgba(255,255,255,0.65)] border-white/80 shadow-sm'} border ${TRANSITIONS.spring}`}>
                                     <div className={`flex items-center gap-1 ml-1 pr-2 border-r ${darkMode ? 'border-zinc-700' : 'border-[#4a5b6c]/10'}`}>
-                                        <IconButton icon="ArrowLeft" onClick={undo} title="Undo" disabled={getCurrentStrokes().length === 0} darkMode={darkMode} />
-                                        <IconButton icon="ArrowRight" onClick={redo} title="Redo" disabled={redoStack.length === 0} darkMode={darkMode} />
+                                        <IconButton icon="Undo2" onClick={undo} title="Undo" disabled={getCurrentStrokes().length === 0} darkMode={darkMode} />
+                                        <IconButton icon="Redo2" onClick={redo} title="Redo" disabled={redoStack.length === 0} darkMode={darkMode} />
                                     </div>
                                     <div className={`flex items-center overflow-hidden ${TRANSITIONS.spring} ${numPages > 1 ? 'max-w-[120px] opacity-100 mr-2' : 'max-w-0 opacity-0 mr-0'}`}>
                                         <div className="flex items-center gap-1 w-full justify-center"><IconButton icon="ChevronLeft" onClick={() => { if(currentPage > 1) changePage(-1); }} disabled={currentPage <= 1} title="Prev" darkMode={darkMode} /><IconButton icon="ChevronRight" onClick={() => { if(currentPage < numPages) changePage(1); }} disabled={currentPage >= numPages} title="Next" darkMode={darkMode} /></div>
