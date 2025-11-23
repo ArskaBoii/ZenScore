@@ -38,12 +38,12 @@
         @keyframes pageTurnRight { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         @keyframes pageTurnLeft { from { transform: translateX(-40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
-        .anim-enter { animation-duration: 0.6s; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); animation-fill-mode: both; }
+        .anim-enter { animation-duration: 0.5s; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); animation-fill-mode: both; }
         .anim-fade-scale { animation-name: fadeInScale; }
         .anim-slide-up { animation-name: slideUpFade; }
         .anim-slide-down { animation-name: slideDownFade; }
-        .anim-page-next { animation: pageTurnRight 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
-        .anim-page-prev { animation: pageTurnLeft 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
+        .anim-page-next { animation: pageTurnRight 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
+        .anim-page-prev { animation: pageTurnLeft 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
     </style>
 </head>
 <body>
@@ -293,7 +293,7 @@
                     try {
                         await saveToDB(newDoc, fileData);
                         setLibrary(prev => prev.map(doc => doc.id === tempId ? newDoc : doc));
-                        // DIRECT OPEN TO WORKSPACE
+                        // DIRECT OPEN TO WORKSPACE (Skipping Overview)
                         openDocument(newDoc, pdf);
                     } catch (err) {
                         console.error("DB Save Error", err);
@@ -326,29 +326,37 @@
 
             const handleDelete = async (id) => { if(confirm("Delete this score?")) { await deleteFromDB(id); setLibrary(prev => prev.filter(doc => doc.id !== id)); } };
 
-            // Auto-Fit Logic
+            // --- NEW: Auto Fit Logic ---
             const fitPageToScreen = async (page) => {
                 const viewport = page.getViewport({ scale: 1 });
                 const screenWidth = window.innerWidth;
                 const screenHeight = window.innerHeight;
-                
-                // Calculate scaling to fit mostly width, but respect height
+                // Calculate optimal scale
                 const scaleW = screenWidth / viewport.width;
                 const scaleH = screenHeight / viewport.height;
+                const bestScale = Math.min(scaleW, scaleH) * 0.98; // 98% to leave margin
                 
-                // Use slightly smaller scale to ensure padding
-                const bestScale = Math.min(scaleW, scaleH) * 0.98; 
                 setScale(bestScale);
-                
-                // Center
+                // Center Horizontally
                 const centeredX = (screenWidth - (viewport.width * bestScale)) / 2;
-                const centeredY = 10; // Top padding
-                setPan({ x: Math.max(0, centeredX), y: centeredY });
+                setPan({ x: Math.max(0, centeredX), y: 10 });
+            };
+
+            // --- NEW: Render Helper to avoid ReferenceError ---
+            const renderPdfPageFromObj = async (page) => {
+                const pixelRatio = window.devicePixelRatio || 1;
+                const renderScale = Math.min(pixelRatio * 1.5, 2.5);
+                const viewport = page.getViewport({ scale: renderScale });
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width; canvas.height = viewport.height;
+                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                const img = new Image(); img.src = canvas.toDataURL('image/jpeg');
+                img.onload = () => { setFile(img); };
             };
 
             const openDocument = async (doc, loadedPdf = null) => {
                 if (doc.type === 'loading') return;
-                setPageStrokes(doc.strokes || {}); setRedoStack([]); setFile(null); setCurrentPage(1); setChatHistory([]);
+                setPageStrokes(doc.strokes || {}); setRedoStack([]); setFile(null); setCurrentPage(1);
                 setActiveDoc(doc); setNumPages(doc.numPages);
                 setUiVisible(true);
 
@@ -361,14 +369,14 @@
                     const page = await pdf.getPage(1);
                     fitPageToScreen(page);
                     renderPdfPageFromObj(page);
-                    setViewMode('work'); // GO DIRECT TO WORK
+                    setViewMode('work'); 
                 } else if (doc.type === 'image') {
                     const dataUrl = await loadFile(doc.id);
                     if(!dataUrl) { alert("File not found."); return; }
                     const img = new Image(); img.src = dataUrl; 
                     img.onload = () => { 
                         setFile(img); 
-                        // Simple fit for image
+                        // Fit Image
                         const scaleW = window.innerWidth / img.width;
                         const scaleH = window.innerHeight / img.height;
                         setScale(Math.min(scaleW, scaleH) * 0.95);
@@ -384,23 +392,9 @@
                 }
             };
 
-            const renderPdfPageFromObj = async (page) => {
-                const pixelRatio = window.devicePixelRatio || 1;
-                // Limit render resolution for performance
-                const renderScale = Math.min(pixelRatio * 1.5, 2.5);
-                const viewport = page.getViewport({ scale: renderScale });
-                const canvas = document.createElement('canvas');
-                canvas.width = viewport.width; canvas.height = viewport.height;
-                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-                const img = new Image(); img.src = canvas.toDataURL('image/jpeg');
-                img.onload = () => { setFile(img); };
-            };
-
             const renderPdfPage = async (pdf, pageNum) => {
                 try {
                     const page = await pdf.getPage(pageNum);
-                    // Auto-fit on every page turn? User asked "full page shows EVERY TIME score is loaded". 
-                    // Usually we keep zoom level on page turn. But let's respect the "every time loaded" rule.
                     renderPdfPageFromObj(page);
                 } catch (err) { console.error(err); }
             };
@@ -412,16 +406,16 @@
                     setTimeout(() => setAnimClass(''), 400);
                     setCurrentPage(next);
                     renderPdfPage(pdfDoc, next);
-                    
-                    // Re-fit page logic could go here if pages have vastly different sizes
-                    // pdfDoc.getPage(next).then(p => fitPageToScreen(p));
                 }
             };
 
             const jumpToPage = (n) => { 
                 setCurrentPage(n); 
-                renderPdfPage(pdfDoc, n); 
-                pdfDoc.getPage(n).then(p => fitPageToScreen(p));
+                // We need the PDF page object to fit it again if size changed
+                pdfDoc.getPage(n).then(page => {
+                    fitPageToScreen(page);
+                    renderPdfPageFromObj(page);
+                });
                 setViewMode('work'); 
             };
             
@@ -442,13 +436,12 @@
             useEffect(() => { const r = () => { if(viewMode === 'work' && file) requestAnimationFrame(drawCanvas); }; window.addEventListener('resize', r); return () => window.removeEventListener('resize', r); }, [file, viewMode]);
             useEffect(() => { const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)'); const handleChange = (e) => setDarkMode(e.matches); mediaQuery.addEventListener('change', handleChange); return () => mediaQuery.removeEventListener('change', handleChange); }, []);
 
-            // --- Input Handlers (Stylus & Touch Logic) ---
+            // --- Input Handlers ---
             const handleTouchStart = (e) => {
                 const touches = e.touches;
                 if (touches.length === 2) {
-                    // MULTI TOUCH = ZOOM/PAN (Always allowed)
-                    // Prevent accidental draw lines: Cancel current stroke if needed
-                    if (isDrawing) {
+                    // Multi Touch: Zoom/Pan -> CANCEL DRAWING if active
+                    if(isDrawing) {
                         setIsDrawing(false);
                         setCurrentStroke(null);
                     }
@@ -462,19 +455,14 @@
                         count: 2 
                     });
                 } else if (touches.length === 1) {
-                    // SINGLE TOUCH
                     if (mode === 'view') {
                         setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
                     } else {
-                        // Drawing Mode
-                        // CHECK INPUT METHOD
+                        // DRAWING: Check Stylus Mode
                         if (inputMethod === 'stylus') {
-                            // In stylus mode, IGNORE touch drawing (allow panning?)
-                            // Usually stylus mode means finger = pan, pen = draw.
-                            // So if it's touch, treat as pan.
+                            // In stylus mode, handle single touch as PAN
                             setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
                         } else {
-                            // Finger mode: Draw
                             handlePointerDown(e);
                         }
                     }
@@ -484,9 +472,8 @@
             const handleTouchMove = (e) => {
                 e.preventDefault(); 
                 const touches = e.touches;
-
                 if (touches.length === 2 && touchStart && touchStart.count === 2) {
-                    // 2-Finger Zoom/Pan
+                    // Zoom/Pan Logic
                     const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
                     const centerX = (touches[0].clientX + touches[1].clientX) / 2;
                     const centerY = (touches[0].clientY + touches[1].clientY) / 2;
@@ -497,17 +484,15 @@
                     setScale(newScale);
                     setPan({ x: touchStart.initialPan.x + deltaX, y: touchStart.initialPan.y + deltaY });
                 } else if (touches.length === 1) {
-                    // Single Finger
-                    // If mode is view OR (mode is draw BUT input is stylus), treat as PAN
+                    // Single Touch Move
                     if (mode === 'view' || (mode !== 'view' && inputMethod === 'stylus')) {
-                        if(touchStart) {
+                         if(touchStart) {
                             const deltaX = touches[0].clientX - touchStart.x;
                             const deltaY = touches[0].clientY - touchStart.y;
                             setPan(p => ({ x: p.x + deltaX, y: p.y + deltaY }));
                             setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
                         }
                     } else {
-                        // Finger Drawing
                         handlePointerMove(e);
                     }
                 }
@@ -515,7 +500,6 @@
 
             const handleTouchEnd = (e) => {
                 if (!touchStart) return;
-                // Tap to toggle UI check
                 if ((mode === 'view' || inputMethod === 'stylus') && touchStart.count === 1 && e.changedTouches.length === 1) {
                     const touch = e.changedTouches[0];
                     const distMoved = Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y);
@@ -525,10 +509,10 @@
                 if (mode !== 'view' && inputMethod !== 'stylus') handlePointerUp(e);
             };
 
-            // MOUSE / PEN EVENTS
+            // Pointer Events (Mouse/Pen)
             const handlePointerDown = (e) => { 
                 if(mode==='view') return; 
-                // Stylus Mode Check for actual Pointer Events (Pen vs Touch)
+                // Stylus Check
                 if (inputMethod === 'stylus' && e.pointerType !== 'pen') return;
                 
                 e.currentTarget.setPointerCapture(e.pointerId); 
