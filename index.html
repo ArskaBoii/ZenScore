@@ -50,7 +50,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useRef, useEffect, useCallback } = React;
+        const { useState, useRef, useEffect, useCallback, useLayoutEffect } = React;
 
         // --- DATABASE LAYER (IndexedDB) ---
         const DB_NAME = 'ZenScoreDB';
@@ -293,6 +293,7 @@
                     try {
                         await saveToDB(newDoc, fileData);
                         setLibrary(prev => prev.map(doc => doc.id === tempId ? newDoc : doc));
+                        // DIRECT OPEN & FIT
                         openDocument(newDoc, pdf);
                     } catch (err) {
                         console.error("DB Save Error", err);
@@ -325,42 +326,51 @@
 
             const handleDelete = async (id) => { if(confirm("Delete this score?")) { await deleteFromDB(id); setLibrary(prev => prev.filter(doc => doc.id !== id)); } };
 
-            // --- AUTO FIT LOGIC ---
+            // --- AUTO FIT LOGIC (CORRECTED) ---
             const fitPageToScreen = (width, height) => {
-                 const screenWidth = window.innerWidth;
-                 const screenHeight = window.innerHeight;
+                 const container = containerRef.current;
+                 if (!container) return;
+                 
+                 const screenWidth = container.clientWidth;
+                 const screenHeight = container.clientHeight;
                  
                  const scaleW = screenWidth / width;
                  const scaleH = screenHeight / height;
                  
-                 // Fit based on the dimension that is constrained
-                 const bestScale = Math.min(scaleW, scaleH) * 0.95; // 95% to leave margin
+                 // Best scale to fit width (primary for music) with margin
+                 const bestScale = Math.min(scaleW, scaleH) * 0.98; 
                  
                  setScale(bestScale);
                  
-                 // Visual dimensions
                  const visualW = width * bestScale;
                  const visualH = height * bestScale;
-
-                 // Calculate center
-                 const x = (screenWidth - visualW) / 2;
+                 const centerX = (screenWidth - visualW) / 2;
                  
-                 // Vertical Center Logic:
-                 // If page fits entirely in height, center it vertically.
-                 // If page is taller than screen (scrolling needed), start at top.
-                 let y;
-                 if (visualH < screenHeight) {
-                     y = (screenHeight - visualH) / 2;
-                 } else {
-                     y = 10; // Top margin
+                 // Align to top plus toolbar height (approx 100px)
+                 const topMargin = 100;
+                 
+                 // Center vertically ONLY if it fits fully, otherwise top align
+                 let centerY = topMargin; 
+                 if (visualH < (screenHeight - topMargin)) {
+                    centerY = (screenHeight - visualH) / 2;
                  }
-                 
-                 setPan({ x: Math.max(0, x), y: Math.max(0, y) });
+
+                 setPan({ x: Math.max(0, centerX), y: centerY });
             };
+
+            // Trigger auto-fit AFTER render
+            useEffect(() => {
+                if (viewMode === 'work' && file) {
+                   // Slight delay to ensure container is laid out
+                   setTimeout(() => {
+                       if (file) fitPageToScreen(file.width, file.height);
+                   }, 50);
+                }
+            }, [viewMode, file]);
 
             const renderPdfPageFromObj = async (page) => {
                 const pixelRatio = window.devicePixelRatio || 1;
-                const renderScale = Math.min(pixelRatio * 1.5, 2.5);
+                const renderScale = Math.min(pixelRatio * 1.5, 2.0); 
                 const viewport = page.getViewport({ scale: renderScale });
                 
                 const canvas = document.createElement('canvas');
@@ -372,8 +382,7 @@
                 
                 img.onload = () => { 
                     setFile(img); 
-                    // Trigger fit on first load of image
-                    fitPageToScreen(img.width, img.height);
+                    // Fit is handled by effect above
                 };
             };
 
@@ -397,7 +406,6 @@
                     const img = new Image(); img.src = dataUrl; 
                     img.onload = () => { 
                         setFile(img); 
-                        fitPageToScreen(img.width, img.height);
                         setViewMode('work'); 
                     };
                 } else if (loadedPdf) {
@@ -408,20 +416,13 @@
                 }
             };
 
-            const renderPdfPage = async (pdf, pageNum) => {
-                try {
-                    const page = await pdf.getPage(pageNum);
-                    renderPdfPageFromObj(page);
-                } catch (err) { console.error(err); }
-            };
-
             const changePage = (offset) => {
                 const next = currentPage + offset;
                 if (next >= 1 && next <= numPages && pdfDoc) {
                     setAnimClass(offset > 0 ? 'anim-page-next' : 'anim-page-prev');
                     setTimeout(() => setAnimClass(''), 400);
                     setCurrentPage(next);
-                    renderPdfPage(pdfDoc, next);
+                    pdfDoc.getPage(next).then(page => renderPdfPageFromObj(page));
                 }
             };
 
@@ -435,7 +436,7 @@
             
             const getCurrentStrokes = () => pageStrokes[currentPage] || [];
             
-            // --- DRAWING LOGIC (SEPARATED) ---
+            // --- DRAWING LOGIC (SEPARATED & OPTIMIZED) ---
             
             const drawBackground = () => {
                 const canvas = bgCanvasRef.current;
@@ -510,6 +511,7 @@
                 return -1;
             };
 
+            // --- Input Handlers ---
             const handleTouchStart = (e) => {
                 const touches = e.touches;
                 if (touches.length === 2) {
@@ -535,6 +537,10 @@
             const handleTouchMove = (e) => {
                 e.preventDefault(); 
                 const touches = e.touches;
+                
+                // IF DRAWING, DO NOT PAN
+                if (isDrawing) return;
+
                 if (touches.length === 2 && touchStart && touchStart.count === 2) {
                     const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
                     const centerX = (touches[0].clientX + touches[1].clientX) / 2;
@@ -551,7 +557,7 @@
                             const deltaX = touches[0].clientX - touchStart.x;
                             const deltaY = touches[0].clientY - touchStart.y;
                             setPan(p => ({ x: p.x + deltaX, y: p.y + deltaY }));
-                            setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1, startTime: touchStart.startTime }); // Keep start time
+                            setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1, startTime: touchStart.startTime });
                         }
                     } else {
                         handlePointerMove(e);
@@ -565,8 +571,8 @@
                     const touch = e.changedTouches[0];
                     const distMoved = Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y);
                     const duration = Date.now() - touchStart.startTime;
-                    // Strict Tap Detection: Minimal move AND quick duration
-                    if (distMoved < 10 && duration < 250) { setUiVisible(!uiVisible); }
+                    // Strict Tap Detection: 20px threshold, 250ms duration
+                    if (distMoved < 20 && duration < 250) { setUiVisible(!uiVisible); }
                 }
                 setTouchStart(null);
                 if (mode !== 'view' && inputMethod !== 'stylus') handlePointerUp(e);
@@ -685,12 +691,16 @@
                             <div 
                                 ref={containerRef} 
                                 className={`flex-1 h-full overflow-hidden flex items-center justify-center cursor-${mode === 'view' ? 'grab' : 'crosshair'} anim-enter anim-fade-scale`}
+                                style={{
+                                    willChange: 'transform',
+                                    touchAction: 'none'
+                                }}
                                 onWheel={handleWheel} 
                                 onTouchStart={handleTouchStart} 
                                 onTouchMove={handleTouchMove} 
                                 onTouchEnd={handleTouchEnd}
                             >
-                                <div className={`relative shadow-[0_20px_50px_rgba(0,0,0,0.1)] origin-center ${animClass}`} style={{ transform: `scale(${scale}) translate(${pan.x}px, ${pan.y}px)` }}>
+                                <div className={`relative shadow-[0_20px_50px_rgba(0,0,0,0.1)] origin-top-left ${animClass}`} style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${scale})` }}>
                                     {/* Layer 1: Background Image */}
                                     <canvas ref={bgCanvasRef} className="absolute inset-0 pointer-events-none" />
                                     {/* Layer 2: Static Ink (Saved) */}
@@ -713,8 +723,8 @@
                                 </div>
                                 <div className={`flex items-center gap-1 p-1.5 px-2 rounded-[50px] backdrop-blur-md ${darkMode ? 'bg-zinc-900/80 border-zinc-700 shadow-black/50' : 'bg-[rgba(255,255,255,0.65)] border-white/80 shadow-sm'} border ${TRANSITIONS.spring}`}>
                                     <div className={`flex items-center gap-1 ml-1 pr-2 border-r ${darkMode ? 'border-zinc-700' : 'border-[#4a5b6c]/10'}`}>
-                                        <IconButton icon="Undo2" onClick={undo} title="Undo" disabled={getCurrentStrokes().length === 0} darkMode={darkMode} />
-                                        <IconButton icon="Redo2" onClick={redo} title="Redo" disabled={redoStack.length === 0} darkMode={darkMode} />
+                                        <IconButton icon="ArrowLeft" onClick={undo} title="Undo" disabled={getCurrentStrokes().length === 0} darkMode={darkMode} />
+                                        <IconButton icon="ArrowRight" onClick={redo} title="Redo" disabled={redoStack.length === 0} darkMode={darkMode} />
                                     </div>
                                     <div className={`flex items-center overflow-hidden ${TRANSITIONS.spring} ${numPages > 1 ? 'max-w-[120px] opacity-100 mr-2' : 'max-w-0 opacity-0 mr-0'}`}>
                                         <div className="flex items-center gap-1 w-full justify-center"><IconButton icon="ChevronLeft" onClick={() => { if(currentPage > 1) changePage(-1); }} disabled={currentPage <= 1} title="Prev" darkMode={darkMode} /><IconButton icon="ChevronRight" onClick={() => { if(currentPage < numPages) changePage(1); }} disabled={currentPage >= numPages} title="Next" darkMode={darkMode} /></div>
@@ -739,3 +749,5 @@
     </script>
 </body>
 </html>
+
+
