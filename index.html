@@ -24,10 +24,9 @@
         body {
             font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
             overflow: hidden;
-            touch-action: none; /* Critical for custom gestures */
+            touch-action: none; 
             margin: 0;
             padding: 0;
-            -webkit-tap-highlight-color: transparent;
         }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
@@ -103,7 +102,6 @@
         // --- Constants ---
         const COLORS = ['#1e1e1e', '#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ffffff'];
         const STROKE_SIZES = [2, 4, 6, 8, 12, 20];
-        const apiKey = ""; 
 
         const TRANSITIONS = {
             spring: "transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
@@ -116,8 +114,6 @@
             if (!canvasRef.current) return { x: 0, y: 0 };
             const canvas = canvasRef.current;
             const rect = canvas.getBoundingClientRect();
-            
-            // Handle both Mouse and Touch events uniformly
             let clientX, clientY;
             if (event.changedTouches && event.changedTouches.length > 0) {
                 clientX = event.changedTouches[0].clientX;
@@ -126,33 +122,10 @@
                 clientX = event.clientX;
                 clientY = event.clientY;
             }
-
             return {
                 x: (clientX - rect.left) * (canvas.width / rect.width),
                 y: (clientY - rect.top) * (canvas.height / rect.height)
             };
-        };
-
-        const callGemini = async (prompt, imageBase64 = null, history = []) => {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-            const contents = history.map(msg => ({ role: msg.role === 'ai' ? 'model' : 'user', parts: [{ text: msg.text }] }));
-            const currentParts = [{ text: prompt }];
-            if (imageBase64) currentParts.push({ inlineData: { mimeType: "image/png", data: imageBase64 } });
-            contents.push({ role: 'user', parts: currentParts });
-
-            const payload = {
-                contents: contents,
-                systemInstruction: { parts: [{ text: "You are Maestro, an expert music theory and performance assistant. You are helpful, encouraging, and concise." }] }
-            };
-
-            try {
-                const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                if (response.ok) {
-                    const data = await response.json();
-                    return data.candidates[0].content.parts[0].text;
-                }
-                return "I'm having trouble connecting. Please try again.";
-            } catch (error) { return "Network error. Please check your connection."; }
         };
 
         // --- Components ---
@@ -177,12 +150,6 @@
 
         const ColorDot = ({ color, active, onClick, darkMode }) => (
             <button onClick={() => onClick(color)} className={`w-9 h-9 rounded-full border-[3px] ${TRANSITIONS.spring} active:scale-95 shadow-sm ${active ? 'scale-110 border-blue-500 shadow-md ring-2 ring-blue-500/20' : `border-transparent hover:scale-105 ring-1 ${darkMode ? 'ring-white/20' : 'ring-black/5 hover:ring-black/10'}`}`} style={{ backgroundColor: color }} />
-        );
-
-        const ChatMessage = ({ role, text, darkMode }) => (
-            <div className={`flex w-full mb-4 anim-enter anim-slide-up ${role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] p-5 rounded-[24px] text-sm leading-relaxed shadow-sm border ${role === 'user' ? 'bg-blue-600 text-white rounded-tr-lg border-blue-500' : `${darkMode ? 'bg-zinc-800 text-zinc-100 border-zinc-700' : 'bg-[rgba(255,255,255,0.65)] text-[#4a5b6c] border-white/90'} rounded-tl-lg backdrop-blur-md`}`}>{text}</div>
-            </div>
         );
 
         const PageThumbnail = ({ pdfDoc, pageNum, isActive, onClick, darkMode }) => {
@@ -267,18 +234,12 @@
             const [color, setColor] = useState('#2d3436');
             const [brushSize, setBrushSize] = useState(4);
             const [showTools, setShowTools] = useState(false);
-            const [showMaestro, setShowMaestro] = useState(false);
-            const [chatHistory, setChatHistory] = useState([]);
-            const [inputMessage, setInputMessage] = useState("");
-            const [isAiLoading, setIsAiLoading] = useState(false);
-            const [includeContext, setIncludeContext] = useState(false);
             const [animClass, setAnimClass] = useState('');
-            
-            // UI Visibility State
             const [uiVisible, setUiVisible] = useState(true);
-
-            // Touch State for Gestures
-            const [touchStart, setTouchStart] = useState(null); // {x, y, dist, scale}
+            const [touchStart, setTouchStart] = useState(null);
+            
+            // SETTINGS
+            const [inputMethod, setInputMethod] = useState('finger'); // 'finger' | 'stylus'
 
             // DARK MODE STATE
             const [darkMode, setDarkMode] = useState(() => {
@@ -289,27 +250,11 @@
             const canvasRef = useRef(null);
             const containerRef = useRef(null);
             const fileInputRef = useRef(null);
-            const chatEndRef = useRef(null);
 
             useEffect(() => {
                 loadLibrary().then(docs => { setLibrary(docs.sort((a,b) => b.id - a.id)); });
             }, []);
-
-            const getCanvasImage = () => { if (!canvasRef.current) return null; return canvasRef.current.toDataURL('image/jpeg', 0.8).split(',')[1]; };
-            const handleSendMessage = async (customPrompt = null, forceImage = false) => {
-                const text = customPrompt || inputMessage;
-                if (!text.trim()) return;
-                if (!customPrompt) setInputMessage("");
-                const userMessage = { role: 'user', text };
-                setChatHistory(prev => [...prev, userMessage]);
-                setIsAiLoading(true);
-                const imageToSend = (forceImage || includeContext) ? getCanvasImage() : null;
-                const responseText = await callGemini(text, imageToSend, [...chatHistory, userMessage]);
-                setChatHistory(prev => [...prev, { role: 'ai', text: responseText }]);
-                setIsAiLoading(false);
-            };
-            const handleAnalyzePage = () => { handleSendMessage("Analyze this page. Identify key signature, time signature, style, and give technical tips.", true); };
-
+            
             const generateThumbnail = async (pdf) => {
                 try {
                     const page = await pdf.getPage(1);
@@ -348,6 +293,7 @@
                     try {
                         await saveToDB(newDoc, fileData);
                         setLibrary(prev => prev.map(doc => doc.id === tempId ? newDoc : doc));
+                        // DIRECT OPEN TO WORKSPACE
                         openDocument(newDoc, pdf);
                     } catch (err) {
                         console.error("DB Save Error", err);
@@ -380,37 +326,82 @@
 
             const handleDelete = async (id) => { if(confirm("Delete this score?")) { await deleteFromDB(id); setLibrary(prev => prev.filter(doc => doc.id !== id)); } };
 
+            // Auto-Fit Logic
+            const fitPageToScreen = async (page) => {
+                const viewport = page.getViewport({ scale: 1 });
+                const screenWidth = window.innerWidth;
+                const screenHeight = window.innerHeight;
+                
+                // Calculate scaling to fit mostly width, but respect height
+                const scaleW = screenWidth / viewport.width;
+                const scaleH = screenHeight / viewport.height;
+                
+                // Use slightly smaller scale to ensure padding
+                const bestScale = Math.min(scaleW, scaleH) * 0.98; 
+                setScale(bestScale);
+                
+                // Center
+                const centeredX = (screenWidth - (viewport.width * bestScale)) / 2;
+                const centeredY = 10; // Top padding
+                setPan({ x: Math.max(0, centeredX), y: centeredY });
+            };
+
             const openDocument = async (doc, loadedPdf = null) => {
                 if (doc.type === 'loading') return;
-                setPageStrokes(doc.strokes || {}); setRedoStack([]); setFile(null); setCurrentPage(1); setScale(1); setPan({x:0,y:0}); setChatHistory([]);
+                setPageStrokes(doc.strokes || {}); setRedoStack([]); setFile(null); setCurrentPage(1); setChatHistory([]);
                 setActiveDoc(doc); setNumPages(doc.numPages);
-                setUiVisible(true); // Show UI on load
+                setUiVisible(true);
 
                 if (!loadedPdf && doc.type === 'pdf') {
                     const buffer = await loadFile(doc.id);
                     if(!buffer) { alert("File not found."); return; }
                     const pdf = await window.pdfjsLib.getDocument(buffer).promise;
-                    setPdfDoc(pdf); setViewMode('overview');
+                    setPdfDoc(pdf);
+                    // RENDER PAGE 1 & AUTO FIT
+                    const page = await pdf.getPage(1);
+                    fitPageToScreen(page);
+                    renderPdfPageFromObj(page);
+                    setViewMode('work'); // GO DIRECT TO WORK
                 } else if (doc.type === 'image') {
                     const dataUrl = await loadFile(doc.id);
                     if(!dataUrl) { alert("File not found."); return; }
-                    const img = new Image(); img.src = dataUrl; img.onload = () => { setFile(img); setViewMode('work'); };
+                    const img = new Image(); img.src = dataUrl; 
+                    img.onload = () => { 
+                        setFile(img); 
+                        // Simple fit for image
+                        const scaleW = window.innerWidth / img.width;
+                        const scaleH = window.innerHeight / img.height;
+                        setScale(Math.min(scaleW, scaleH) * 0.95);
+                        setPan({x:10, y:10});
+                        setViewMode('work'); 
+                    };
                 } else if (loadedPdf) {
-                    setPdfDoc(loadedPdf); setViewMode('overview');
+                    setPdfDoc(loadedPdf);
+                    const page = await loadedPdf.getPage(1);
+                    fitPageToScreen(page);
+                    renderPdfPageFromObj(page);
+                    setViewMode('work');
                 }
+            };
+
+            const renderPdfPageFromObj = async (page) => {
+                const pixelRatio = window.devicePixelRatio || 1;
+                // Limit render resolution for performance
+                const renderScale = Math.min(pixelRatio * 1.5, 2.5);
+                const viewport = page.getViewport({ scale: renderScale });
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width; canvas.height = viewport.height;
+                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                const img = new Image(); img.src = canvas.toDataURL('image/jpeg');
+                img.onload = () => { setFile(img); };
             };
 
             const renderPdfPage = async (pdf, pageNum) => {
                 try {
                     const page = await pdf.getPage(pageNum);
-                    const pixelRatio = window.devicePixelRatio || 1;
-                    const scaleVal = Math.min(pixelRatio * 1.5, 2.5); 
-                    const viewport = page.getViewport({ scale: scaleVal });
-                    const canvas = document.createElement('canvas');
-                    canvas.width = viewport.width; canvas.height = viewport.height;
-                    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-                    const img = new Image(); img.src = canvas.toDataURL('image/jpeg');
-                    img.onload = () => { setFile(img); setPan({x:0,y:0}); };
+                    // Auto-fit on every page turn? User asked "full page shows EVERY TIME score is loaded". 
+                    // Usually we keep zoom level on page turn. But let's respect the "every time loaded" rule.
+                    renderPdfPageFromObj(page);
                 } catch (err) { console.error(err); }
             };
 
@@ -421,10 +412,19 @@
                     setTimeout(() => setAnimClass(''), 400);
                     setCurrentPage(next);
                     renderPdfPage(pdfDoc, next);
+                    
+                    // Re-fit page logic could go here if pages have vastly different sizes
+                    // pdfDoc.getPage(next).then(p => fitPageToScreen(p));
                 }
             };
 
-            const jumpToPage = (n) => { setCurrentPage(n); renderPdfPage(pdfDoc, n); setViewMode('work'); };
+            const jumpToPage = (n) => { 
+                setCurrentPage(n); 
+                renderPdfPage(pdfDoc, n); 
+                pdfDoc.getPage(n).then(p => fitPageToScreen(p));
+                setViewMode('work'); 
+            };
+            
             const getCurrentStrokes = () => pageStrokes[currentPage] || [];
             const drawCanvas = () => {
                 const canvas = canvasRef.current; if (!canvas || !file) return;
@@ -440,19 +440,18 @@
             useEffect(() => { const handleK = (e) => { if (document.activeElement.tagName === 'INPUT' || viewMode !== 'work') return; if(['ArrowRight','PageDown',' ','Enter'].includes(e.key)) changePage(1); if(['ArrowLeft','PageUp'].includes(e.key)) changePage(-1); }; window.addEventListener('keydown', handleK); return () => window.removeEventListener('keydown', handleK); }, [viewMode, currentPage, numPages, pdfDoc]);
             useEffect(() => { if (viewMode === 'work' && file) drawCanvas(); }, [file, pageStrokes, currentStroke]);
             useEffect(() => { const r = () => { if(viewMode === 'work' && file) requestAnimationFrame(drawCanvas); }; window.addEventListener('resize', r); return () => window.removeEventListener('resize', r); }, [file, viewMode]);
-            useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory, showMaestro]);
             useEffect(() => { const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)'); const handleChange = (e) => setDarkMode(e.matches); mediaQuery.addEventListener('change', handleChange); return () => mediaQuery.removeEventListener('change', handleChange); }, []);
 
-            // --- MOBILE GESTURE HANDLING ---
-            
+            // --- Input Handlers (Stylus & Touch Logic) ---
             const handleTouchStart = (e) => {
                 const touches = e.touches;
-                if (touches.length === 1) {
-                    // Single touch: might be tap, pan, or draw
-                    setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
-                    if (mode !== 'view') handlePointerDown(e); 
-                } else if (touches.length === 2) {
-                    // Multi touch: Zoom or Two-finger Pan
+                if (touches.length === 2) {
+                    // MULTI TOUCH = ZOOM/PAN (Always allowed)
+                    // Prevent accidental draw lines: Cancel current stroke if needed
+                    if (isDrawing) {
+                        setIsDrawing(false);
+                        setCurrentStroke(null);
+                    }
                     const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
                     setTouchStart({ 
                         x: (touches[0].clientX + touches[1].clientX) / 2,
@@ -462,43 +461,53 @@
                         initialPan: { ...pan },
                         count: 2 
                     });
+                } else if (touches.length === 1) {
+                    // SINGLE TOUCH
+                    if (mode === 'view') {
+                        setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
+                    } else {
+                        // Drawing Mode
+                        // CHECK INPUT METHOD
+                        if (inputMethod === 'stylus') {
+                            // In stylus mode, IGNORE touch drawing (allow panning?)
+                            // Usually stylus mode means finger = pan, pen = draw.
+                            // So if it's touch, treat as pan.
+                            setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
+                        } else {
+                            // Finger mode: Draw
+                            handlePointerDown(e);
+                        }
+                    }
                 }
             };
 
             const handleTouchMove = (e) => {
-                e.preventDefault(); // Prevent default browser scrolling/zooming
+                e.preventDefault(); 
                 const touches = e.touches;
 
                 if (touches.length === 2 && touchStart && touchStart.count === 2) {
-                    // Pinch to Zoom & Pan Logic
+                    // 2-Finger Zoom/Pan
                     const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
                     const centerX = (touches[0].clientX + touches[1].clientX) / 2;
                     const centerY = (touches[0].clientY + touches[1].clientY) / 2;
-
-                    // Zoom
                     const scaleFactor = dist / touchStart.dist;
                     const newScale = Math.min(Math.max(0.5, touchStart.initialScale * scaleFactor), 5);
-                    
-                    // Pan (follow fingers)
                     const deltaX = centerX - touchStart.x;
                     const deltaY = centerY - touchStart.y;
-                    
                     setScale(newScale);
-                    setPan({
-                        x: touchStart.initialPan.x + deltaX,
-                        y: touchStart.initialPan.y + deltaY
-                    });
+                    setPan({ x: touchStart.initialPan.x + deltaX, y: touchStart.initialPan.y + deltaY });
                 } else if (touches.length === 1) {
-                    // Single Finger Logic
-                    if (mode === 'view' && touchStart) {
-                        // Pan in View Mode
-                        const deltaX = touches[0].clientX - touchStart.x;
-                        const deltaY = touches[0].clientY - touchStart.y;
-                        // Update start to create continuous drag, accumulating pan
-                        setPan(p => ({ x: p.x + deltaX, y: p.y + deltaY }));
-                        setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
-                    } else if (mode !== 'view') {
-                        // Draw
+                    // Single Finger
+                    // If mode is view OR (mode is draw BUT input is stylus), treat as PAN
+                    if (mode === 'view' || (mode !== 'view' && inputMethod === 'stylus')) {
+                        if(touchStart) {
+                            const deltaX = touches[0].clientX - touchStart.x;
+                            const deltaY = touches[0].clientY - touchStart.y;
+                            setPan(p => ({ x: p.x + deltaX, y: p.y + deltaY }));
+                            setTouchStart({ x: touches[0].clientX, y: touches[0].clientY, count: 1 });
+                        }
+                    } else {
+                        // Finger Drawing
                         handlePointerMove(e);
                     }
                 }
@@ -506,24 +515,43 @@
 
             const handleTouchEnd = (e) => {
                 if (!touchStart) return;
-                
-                // Check for Tap to Toggle UI (only in View mode, negligible movement)
-                if (mode === 'view' && touchStart.count === 1 && e.changedTouches.length === 1) {
+                // Tap to toggle UI check
+                if ((mode === 'view' || inputMethod === 'stylus') && touchStart.count === 1 && e.changedTouches.length === 1) {
                     const touch = e.changedTouches[0];
                     const distMoved = Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y);
-                    if (distMoved < 10) {
-                        setUiVisible(!uiVisible); // Toggle UI
-                    }
+                    if (distMoved < 10) { setUiVisible(!uiVisible); }
                 }
-
                 setTouchStart(null);
-                if (mode !== 'view') handlePointerUp(e);
+                if (mode !== 'view' && inputMethod !== 'stylus') handlePointerUp(e);
             };
 
-            // Mouse handlers (for desktop/drawing)
-            const handlePointerDown = (e) => { if(mode==='view') return; e.currentTarget.setPointerCapture(e.pointerId); setIsDrawing(true); const {x,y}=getCoordinates(e,canvasRef); setCurrentStroke({tool:mode, color:mode==='erase'?'#000000':color, size:brushSize, points:[{x,y}]}); };
-            const handlePointerMove = (e) => { if(!isDrawing||!currentStroke) return; const {x,y}=getCoordinates(e,canvasRef); setCurrentStroke(prev=>({...prev, points:[...prev.points,{x,y}]})); };
-            const handlePointerUp = (e) => { if(!isDrawing||!currentStroke) return; setIsDrawing(false); const newStrokes = {...pageStrokes, [currentPage]:[...(pageStrokes[currentPage]||[]), currentStroke]}; setPageStrokes(newStrokes); setCurrentStroke(null); if(activeDoc) updateStrokesInDB(activeDoc.id, newStrokes); };
+            // MOUSE / PEN EVENTS
+            const handlePointerDown = (e) => { 
+                if(mode==='view') return; 
+                // Stylus Mode Check for actual Pointer Events (Pen vs Touch)
+                if (inputMethod === 'stylus' && e.pointerType !== 'pen') return;
+                
+                e.currentTarget.setPointerCapture(e.pointerId); 
+                setIsDrawing(true); 
+                const {x,y}=getCoordinates(e,canvasRef); 
+                setCurrentStroke({tool:mode, color:mode==='erase'?'#000000':color, size:brushSize, points:[{x,y}]}); 
+            };
+            
+            const handlePointerMove = (e) => { 
+                if(!isDrawing||!currentStroke) return; 
+                const {x,y}=getCoordinates(e,canvasRef); 
+                setCurrentStroke(prev=>({...prev, points:[...prev.points,{x,y}]})); 
+            };
+            
+            const handlePointerUp = (e) => { 
+                if(!isDrawing||!currentStroke) return; 
+                setIsDrawing(false); 
+                const newStrokes = {...pageStrokes, [currentPage]:[...(pageStrokes[currentPage]||[]), currentStroke]}; 
+                setPageStrokes(newStrokes); 
+                setCurrentStroke(null); 
+                if(activeDoc) updateStrokesInDB(activeDoc.id, newStrokes); 
+            };
+            
             const undo = () => { const s = getCurrentStrokes(); if(s.length) { const newStrokes = {...pageStrokes, [currentPage]: s.slice(0,-1)}; setPageStrokes(newStrokes); if(activeDoc) updateStrokesInDB(activeDoc.id, newStrokes); } };
             const redo = () => {}; 
             const handleWheel = (e) => { if(e.ctrlKey) { e.preventDefault(); setScale(s => Math.min(Math.max(0.5, s + (e.deltaY * -0.01)), 4)); } };
@@ -575,13 +603,11 @@
                     )}
                     {viewMode === 'work' && (
                         <>
-                            {/* Dynamic UI Visibility */}
                             <div className={`absolute top-0 left-0 right-0 h-24 pointer-events-none z-20 flex items-center justify-between px-8 ${TRANSITIONS.spring} ${uiVisible ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}`}>
                                 <div className="pointer-events-auto flex items-center gap-4">
                                     <IconButton icon="LayoutGrid" onClick={() => setViewMode('overview')} title="Overview" className={`${darkMode ? 'bg-zinc-900/80 border-zinc-700 text-zinc-100' : 'bg-[rgba(255,255,255,0.65)] border-white/80'} border backdrop-blur-md shadow-sm fixed top-6 left-6`} darkMode={darkMode} />
                                     <div className={`flex items-center gap-2 ${darkMode ? 'bg-zinc-900/80 border-zinc-700 text-zinc-100' : 'bg-[rgba(255,255,255,0.65)] border-white/80 text-[#4a5b6c]'} backdrop-blur-md px-5 py-2 rounded-[16px] text-sm font-semibold shadow-sm border fixed top-6 left-24 ${TRANSITIONS.spring}`}><span className="opacity-40 mr-1">PG</span><span className="text-lg">{currentPage}</span><span className="opacity-40">/ {numPages}</span></div>
                                 </div>
-                                <div className="pointer-events-auto flex gap-2"><IconButton icon="Sparkles" onClick={() => setShowMaestro(!showMaestro)} active={showMaestro} title="Maestro AI" className={`${darkMode ? 'bg-zinc-900/80 border-zinc-700 text-amber-400' : 'bg-[rgba(255,255,255,0.65)] border-white/80 text-[#9fb3a8]'} border backdrop-blur-md shadow-sm fixed top-6 right-6`} darkMode={darkMode} /></div>
                             </div>
 
                             <div 
@@ -597,12 +623,23 @@
                                 </div>
                             </div>
 
-                            <div className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-6 ${TRANSITIONS.spring} ${uiVisible ? 'translate-y-0 opacity-100' : 'translate-y-20 opacity-0 pointer-events-none'} ${showMaestro ? '-translate-x-[calc(50%+220px)]' : '-translate-x-1/2'}`}>
+                            <div className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-6 ${TRANSITIONS.spring} ${uiVisible ? 'translate-y-0 opacity-100' : 'translate-y-20 opacity-0 pointer-events-none'}`}>
                                 <div className={`overflow-hidden rounded-[40px] ${darkMode ? 'bg-zinc-900/90 border-zinc-700' : 'bg-[rgba(255,255,255,0.85)] border-white/90'} backdrop-blur-md border shadow-lg ${TRANSITIONS.spring} origin-bottom ${showTools && mode !== 'view' ? 'max-h-96 opacity-100 scale-100 mb-0' : 'max-h-0 opacity-0 scale-90 mb-[-20px] pointer-events-none'}`}>
                                     <div className="p-6 flex flex-col gap-5 min-w-[300px]">
                                         <div className="flex gap-3 justify-center">{COLORS.map(c => <ColorDot key={c} color={c} active={color === c && mode !== 'erase'} onClick={(c) => { setColor(c); setMode('draw'); }} darkMode={darkMode} />)}</div>
                                         <div className={`flex items-center gap-3 pt-4 border-t ${darkMode ? 'border-zinc-700' : 'border-[#4a5b6c]/10'} justify-center`}>
                                             {STROKE_SIZES.map(s => <button key={s} onClick={() => setBrushSize(s)} className={`relative flex items-center justify-center w-10 h-10 rounded-full ${TRANSITIONS.spring} active:scale-95 ${brushSize === s ? 'scale-100 opacity-100' : 'scale-75 opacity-40 hover:opacity-100'}`}><div className={`absolute inset-0 rounded-full border-2 ${TRANSITIONS.spring} ${brushSize === s ? 'border-[#74b9ff]' : 'border-transparent'}`} /><div className={`rounded-full ${TRANSITIONS.spring} ${brushSize === s ? 'bg-[#74b9ff]' : (darkMode ? 'bg-zinc-600' : 'bg-[#4a5b6c]')}`} style={{ width: `${Math.max(s, 4)}px`, height: `${Math.max(s, 4)}px` }} /></button>)}
+                                        </div>
+                                        
+                                        {/* Input Method Toggle */}
+                                        <div className={`pt-4 border-t ${darkMode ? 'border-zinc-700' : 'border-[#4a5b6c]/10'} flex justify-between items-center`}>
+                                            <span className={`text-xs font-bold uppercase tracking-widest ${darkMode ? 'text-zinc-500' : 'text-[#4a5b6c]/60'}`}>Input Mode</span>
+                                            <button 
+                                                onClick={() => setInputMethod(m => m === 'finger' ? 'stylus' : 'finger')}
+                                                className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${inputMethod === 'stylus' ? 'bg-[#74b9ff] text-white shadow-md' : (darkMode ? 'bg-zinc-800 text-zinc-400' : 'bg-white/50 text-[#4a5b6c]')} `}
+                                            >
+                                                {inputMethod === 'stylus' ? 'Stylus Only' : 'Finger Draw'}
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -620,16 +657,6 @@
                             </div>
                         </>
                     )}
-                    <div className={`fixed inset-y-0 right-0 w-full md:w-[400px] z-40 ${darkMode ? 'bg-zinc-900/95 border-zinc-800' : 'bg-[rgba(255,255,255,0.9)] border-white/50'} backdrop-blur-xl border-l shadow-lg transform ${TRANSITIONS.slide} flex flex-col ${showMaestro ? 'translate-x-0' : 'translate-x-full'}`}>
-                        <div className={`h-24 flex items-center px-8 shrink-0 border-b ${darkMode ? 'border-zinc-800' : 'border-white/50'} ${TRANSITIONS.spring} justify-between`}><div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-[12px] ${darkMode ? 'bg-amber-900/30 text-amber-400' : 'bg-[#fdcb6e]/20 text-[#fdcb6e]'} flex items-center justify-center ${TRANSITIONS.spring} shadow-sm`}><Icon name="Sparkles" size={20} /></div><div><h2 className={`font-semibold text-lg ${darkMode ? 'text-zinc-100' : 'text-[#4a5b6c]'}`}>Maestro</h2><p className={`text-xs font-medium ${darkMode ? 'text-zinc-500' : 'text-[#4a5b6c]/50'}`}>AI Companion</p></div></div><button onClick={() => setShowMaestro(false)} className={`opacity-50 hover:opacity-100 p-3 hover:bg-black/5 rounded-full ${TRANSITIONS.spring} active:scale-95`}><Icon name="ChevronRight" size={20} /></button></div>
-                        <div className="flex-1 overflow-y-auto p-6 scrollbar-hide">
-                            {chatHistory.length===0 && <div className="text-center p-10 opacity-60"><div className={`w-24 h-24 rounded-[24px] flex items-center justify-center mb-6 shadow-lg mx-auto ${darkMode ? 'bg-zinc-800 text-amber-400' : 'bg-white text-[#fdcb6e]'}`}><Icon name="Sparkles" size={40} /></div>I can analyze your score. <button onClick={handleAnalyzePage} className="block mt-4 text-[#74b9ff] mx-auto">Analyze Page</button></div>}
-                            {chatHistory.map((msg, i) => <ChatMessage key={i} role={msg.role} text={msg.text} darkMode={darkMode} />)}
-                            {isAiLoading && <div className="p-4 text-sm opacity-50">Thinking...</div>}
-                            <div ref={chatEndRef} />
-                        </div>
-                        <div className={`p-6 border-t ${darkMode ? 'border-zinc-800 bg-zinc-900/50' : 'border-white/50 bg-white/40'} ${TRANSITIONS.spring}`}><div className="relative"><input type="text" value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} placeholder="Ask Maestro..." className={`w-full border rounded-[16px] pl-5 pr-14 py-4 text-sm font-medium transition-all shadow-sm focus:outline-none ${darkMode ? 'bg-zinc-800 border-zinc-700 focus:ring-zinc-600 text-white' : 'border-white/50 bg-[rgba(255,255,255,0.5)] focus:bg-white focus:ring-[#74b9ff]/20'} ${TRANSITIONS.spring}`} /><button onClick={() => handleSendMessage()} className={`absolute right-2 top-1/2 -translate-y-1/2 p-2 ${darkMode ? 'text-amber-400' : 'text-[#74b9ff]'}`}><Icon name="Send" size={18} /></button></div></div>
-                    </div>
                 </div>
             );
         }
