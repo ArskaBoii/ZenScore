@@ -63,6 +63,74 @@
     <script type="text/babel">
         const { useState, useRef, useEffect, useCallback } = React;
 
+        // --- DATABASE LAYER (IndexedDB) ---
+        const DB_NAME = 'ZenScoreDB';
+        const DB_VERSION = 1;
+
+        const initDB = () => {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('metadata')) {
+                        db.createObjectStore('metadata', { keyPath: 'id' });
+                    }
+                    if (!db.objectStoreNames.contains('files')) {
+                        db.createObjectStore('files', { keyPath: 'id' });
+                    }
+                };
+                request.onsuccess = (e) => resolve(e.target.result);
+                request.onerror = (e) => reject(e.target.error);
+            });
+        };
+
+        const dbOp = async (storeName, mode, callback) => {
+            const db = await initDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(storeName, mode);
+                const store = tx.objectStore(storeName);
+                const req = callback(store);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        };
+
+        const saveToDB = async (docMeta, fileBlob) => {
+            // Store binary separately
+            await dbOp('files', 'readwrite', store => store.put({ id: docMeta.id, file: fileBlob }));
+            // Store metadata
+            await dbOp('metadata', 'readwrite', store => store.put(docMeta));
+        };
+
+        const loadLibrary = async () => {
+            return await dbOp('metadata', 'readonly', store => store.getAll());
+        };
+
+        const loadFile = async (id) => {
+            const result = await dbOp('files', 'readonly', store => store.get(id));
+            return result ? result.file : null;
+        };
+
+        const updateStrokesInDB = async (id, strokes) => {
+            const db = await initDB();
+            const tx = db.transaction('metadata', 'readwrite');
+            const store = tx.objectStore('metadata');
+            const req = store.get(id);
+            req.onsuccess = () => {
+                const data = req.result;
+                if (data) {
+                    data.strokes = strokes;
+                    data.date = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+                    store.put(data);
+                }
+            };
+        };
+
+        const deleteFromDB = async (id) => {
+            await dbOp('files', 'readwrite', store => store.delete(id));
+            await dbOp('metadata', 'readwrite', store => store.delete(id));
+        };
+
         // --- Constants ---
         const COLORS = ['#1e1e1e', '#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ffffff'];
         const STROKE_SIZES = [2, 4, 6, 8, 12, 20];
@@ -174,12 +242,21 @@
             );
         };
 
-        const LibraryCard = ({ doc, onClick, darkMode }) => (
+        const LibraryCard = ({ doc, onClick, onDelete, darkMode }) => (
             <div onClick={onClick} className="group relative flex flex-col gap-3 cursor-pointer anim-enter anim-fade-scale">
                 <div className={`relative aspect-[3/4] rounded-[24px] overflow-hidden shadow-lg ring-1 ${darkMode ? 'bg-zinc-900 ring-white/10' : 'bg-[rgba(255,255,255,0.85)] ring-white/90'} backdrop-blur-sm ${TRANSITIONS.spring} group-hover:-translate-y-2 active:-translate-y-1 group-hover:shadow-2xl`}>
                     {doc.thumbnail ? <img src={doc.thumbnail} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105 opacity-90 group-hover:opacity-100" alt="Cover" /> : <div className={`w-full h-full flex items-center justify-center ${darkMode ? 'bg-zinc-800/50' : ''}`}><Icon name="FileText" size={40} className={darkMode ? 'text-zinc-600' : "text-[#9fb3a8]"} /></div>}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                     <div className="absolute bottom-5 left-5 text-white opacity-0 group-hover:opacity-100 transition-all duration-500 translate-y-2 group-hover:translate-y-0"><p className="text-[10px] font-bold uppercase tracking-widest mb-1 text-[#9fb3a8]">Last opened</p><div className="flex items-center gap-1.5"><Icon name="Clock" size={12} /><p className="text-xs opacity-90 font-medium">{doc.date}</p></div></div>
+                    
+                    {/* Delete Button */}
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onDelete(doc.id); }}
+                        className={`absolute top-3 right-3 p-2 rounded-full bg-white/10 hover:bg-red-500/80 text-white backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all hover:scale-110 active:scale-90`}
+                        title="Delete Score"
+                    >
+                        <Icon name="Trash2" size={16} />
+                    </button>
                 </div>
                 <div className="px-2 text-center"><h3 className={`font-semibold truncate text-lg ${darkMode ? 'text-zinc-100' : 'text-[#4a5b6c]'}`}>{doc.name}</h3><p className={`text-sm font-medium ${darkMode ? 'text-zinc-500' : 'text-[#4a5b6c]/60'}`}>{doc.numPages} Pages</p></div>
             </div>
@@ -222,6 +299,15 @@
             const containerRef = useRef(null);
             const fileInputRef = useRef(null);
             const chatEndRef = useRef(null);
+
+            // --- Lifecycle ---
+            
+            // Load Library on Init
+            useEffect(() => {
+                loadLibrary().then(docs => {
+                    setLibrary(docs.sort((a,b) => b.id - a.id));
+                });
+            }, []);
 
             // --- Logic ---
             
@@ -266,16 +352,48 @@
             const handleFileLoad = (e) => {
                 const selectedFile = e.target.files[0];
                 if (!selectedFile) return;
+                
+                const processFile = async (fileData, type, numPages = 1, pdf = null) => {
+                    let thumb = null;
+                    if (type === 'pdf' && pdf) {
+                        thumb = await generateThumbnail(pdf);
+                    } else if (type === 'image') {
+                        thumb = fileData;
+                    }
+
+                    const newDoc = {
+                        id: Date.now(),
+                        name: selectedFile.name.replace(/\.[^/.]+$/, ""),
+                        thumbnail: thumb,
+                        numPages: numPages,
+                        date: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
+                        type: type,
+                        strokes: {} 
+                    };
+
+                    try {
+                        await saveToDB(newDoc, fileData);
+                        setLibrary(prev => [newDoc, ...prev]);
+                        openDocument(newDoc, pdf);
+                    } catch (err) {
+                        console.error("DB Save Error", err);
+                        alert("Failed to save to storage.");
+                    }
+                };
+
                 if (selectedFile.type === 'application/pdf') {
                     const reader = new FileReader();
                     reader.onload = async (event) => {
                         try {
                             if (!window.pdfjsLib) { alert("Loading lib..."); return; }
-                            const pdf = await window.pdfjsLib.getDocument(new Uint8Array(event.target.result)).promise;
-                            const thumb = await generateThumbnail(pdf);
-                            const newDoc = { id: Date.now(), name: selectedFile.name.replace('.pdf', ''), file: new Uint8Array(event.target.result), thumbnail: thumb, numPages: pdf.numPages, date: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), type: 'pdf' };
-                            setLibrary(prev => [newDoc, ...prev]);
-                            openDocument(newDoc, pdf);
+                            const buffer = event.target.result; // ArrayBuffer
+                            
+                            // CRITICAL FIX: Clone buffer for PDF.js because it detaches it
+                            const pdfBuffer = buffer.slice(0); 
+                            const pdf = await window.pdfjsLib.getDocument(pdfBuffer).promise;
+                            
+                            // Use original buffer (wrapped) for DB
+                            await processFile(new Uint8Array(buffer), 'pdf', pdf.numPages, pdf);
                         } catch (err) { 
                             console.error(err);
                             alert("Error loading PDF: " + err.message); 
@@ -285,22 +403,39 @@
                 } else if (selectedFile.type.startsWith('image/')) {
                     const reader = new FileReader();
                     reader.onload = (event) => {
-                        const newDoc = { id: Date.now(), name: selectedFile.name, file: event.target.result, thumbnail: event.target.result, numPages: 1, date: new Date().toLocaleTimeString(), type: 'image' };
-                        setLibrary(prev => [newDoc, ...prev]);
-                        openDocument(newDoc, null);
+                        processFile(event.target.result, 'image');
                     };
                     reader.readAsDataURL(selectedFile);
                 }
             };
 
-            const openDocument = (doc, loadedPdf = null) => {
-                setPageStrokes({}); setRedoStack([]); setFile(null); setCurrentPage(1); setScale(1); setPan({x:0,y:0}); setChatHistory([]);
+            const handleDelete = async (id) => {
+                if(confirm("Delete this score?")) {
+                    await deleteFromDB(id);
+                    setLibrary(prev => prev.filter(doc => doc.id !== id));
+                }
+            };
+
+            const openDocument = async (doc, loadedPdf = null) => {
+                setPageStrokes(doc.strokes || {});
+                setRedoStack([]); setFile(null); setCurrentPage(1); setScale(1); setPan({x:0,y:0}); setChatHistory([]);
                 setActiveDoc(doc); setNumPages(doc.numPages);
-                if (doc.type === 'pdf') {
-                    if (loadedPdf) { setPdfDoc(loadedPdf); setViewMode('overview'); }
-                    else { window.pdfjsLib.getDocument(doc.file).promise.then(p => { setPdfDoc(p); setViewMode('overview'); }); }
-                } else {
-                    const img = new Image(); img.src = doc.file; img.onload = () => { setFile(img); setViewMode('work'); };
+
+                let fileData = null;
+                if (!loadedPdf && doc.type === 'pdf') {
+                    const buffer = await loadFile(doc.id);
+                    if(!buffer) { alert("File not found in storage."); return; }
+                    const pdf = await window.pdfjsLib.getDocument(buffer).promise;
+                    setPdfDoc(pdf);
+                    setViewMode('overview');
+                } else if (doc.type === 'image') {
+                    const dataUrl = await loadFile(doc.id);
+                    if(!dataUrl) { alert("File not found."); return; }
+                    const img = new Image(); img.src = dataUrl; 
+                    img.onload = () => { setFile(img); setViewMode('work'); };
+                } else if (loadedPdf) {
+                    setPdfDoc(loadedPdf);
+                    setViewMode('overview');
                 }
             };
 
@@ -342,9 +477,11 @@
             };
 
             // --- Effects ---
-            
-            // No worker effect needed, it's global now.
-
+            useEffect(() => { 
+                if(window.pdfjsLib) {
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                }
+            }, []);
             useEffect(() => {
                 const handleK = (e) => { if (document.activeElement.tagName === 'INPUT' || viewMode !== 'work') return; if(['ArrowRight','PageDown',' ','Enter'].includes(e.key)) changePage(1); if(['ArrowLeft','PageUp'].includes(e.key)) changePage(-1); };
                 window.addEventListener('keydown', handleK); return () => window.removeEventListener('keydown', handleK);
@@ -373,8 +510,28 @@
             };
             const handlePointerDown = (e) => { if(mode==='view') return; e.currentTarget.setPointerCapture(e.pointerId); setIsDrawing(true); const {x,y}=getCoordinates(e,canvasRef); setCurrentStroke({tool:mode, color:mode==='erase'?'#000000':color, size:brushSize, points:[{x,y}]}); };
             const handlePointerMove = (e) => { if(!isDrawing||!currentStroke) return; const {x,y}=getCoordinates(e,canvasRef); setCurrentStroke(prev=>({...prev, points:[...prev.points,{x,y}]})); };
-            const handlePointerUp = (e) => { if(!isDrawing||!currentStroke) return; setIsDrawing(false); setPageStrokes(prev=>({...prev, [currentPage]:[...(prev[currentPage]||[]), currentStroke]})); setCurrentStroke(null); };
-            const undo = () => { const s = getCurrentStrokes(); if(s.length) setPageStrokes(prev=>({...prev, [currentPage]: s.slice(0,-1)})); };
+            
+            const handlePointerUp = (e) => { 
+                if(!isDrawing||!currentStroke) return; 
+                setIsDrawing(false); 
+                const newStrokes = {...pageStrokes, [currentPage]:[...(pageStrokes[currentPage]||[]), currentStroke]};
+                setPageStrokes(newStrokes); 
+                setCurrentStroke(null);
+                
+                // Save to DB automatically
+                if(activeDoc) {
+                    updateStrokesInDB(activeDoc.id, newStrokes);
+                }
+            };
+            
+            const undo = () => { 
+                const s = getCurrentStrokes(); 
+                if(s.length) {
+                    const newStrokes = {...pageStrokes, [currentPage]: s.slice(0,-1)};
+                    setPageStrokes(newStrokes);
+                    if(activeDoc) updateStrokesInDB(activeDoc.id, newStrokes);
+                }
+            };
             const redo = () => {}; 
             const handleWheel = (e) => { if(e.ctrlKey) { e.preventDefault(); setScale(s => Math.min(Math.max(0.5, s + (e.deltaY * -0.01)), 4)); } };
 
@@ -408,7 +565,7 @@
                                 ) : (
                                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-8 pb-20">
                                         {library.map(doc => (
-                                            <LibraryCard key={doc.id} doc={doc} onClick={() => openDocument(doc)} darkMode={darkMode} />
+                                            <LibraryCard key={doc.id} doc={doc} onClick={() => openDocument(doc)} onDelete={handleDelete} darkMode={darkMode} />
                                         ))}
                                     </div>
                                 )}
